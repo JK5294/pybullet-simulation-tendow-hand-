@@ -35,8 +35,8 @@ Simulation Adapter  (PyBullet / dummy backend / real hardware)
 ### From source (development)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/tendon-hand.git
-cd tendon-hand
+git clone git@github.com:JK5294/pybullet-simulation-tendow-hand-.git
+cd pybullet-simulation-tendow-hand-
 pip install -e ".[all]"
 ```
 

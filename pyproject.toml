@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tendon-hand"
-version = "0.1.2"
+version = "0.1.3"
 description = "Tendon-driven dexterous hand physics/control abstraction layer"
 readme = "README.md"
 license = {text = "MIT"}

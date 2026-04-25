@@ -38,6 +38,68 @@ class ThumbJointLimits:
     palm: tuple[float, float] = (0.0, 0.087)
 
 
+@dataclass(frozen=True)
+class WristTendonCompensation:
+    """Motor-space compensation for wrist-induced tendon pull.
+
+    In the real hand the finger motors sit behind the wrist. When the wrist
+    rotates, routed tendons can be pulled as if the finger motors had closed.
+    The compensation sends the finger motors in the opposite direction before
+    the cascade model computes joint targets.
+
+    Formula:
+        motor_delta_rad = -(wrist_moment_arm / motor_spool_radius) * wrist_rad
+
+    The default coefficients are conservative placeholders in motor-rad per
+    wrist-rad. Calibrate them from measured routing moment arms and spool radii
+    for the final hardware.
+    """
+
+    enabled: bool = True
+    gains: dict[str, tuple[float, float]] = field(default_factory=lambda: {
+        "thumb_m1": (0.20, 0.20),
+        "thumb_m2": (0.12, 0.12),
+        "index_m1": (0.30, 0.00),
+        "index_m2": (0.20, 0.00),
+        "middle_m1": (0.30, 0.00),
+        "middle_m2": (0.20, 0.00),
+        "ring_m1": (0.00, 0.30),
+        "ring_m2": (0.00, 0.20),
+        "pinky_m1": (0.00, 0.30),
+        "pinky_m2": (0.00, 0.20),
+    })
+
+    @classmethod
+    def from_geometry(
+        cls,
+        routing_moment_arms: dict[str, tuple[float, float]],
+        *,
+        spool_radius: float,
+        enabled: bool = True,
+    ) -> "WristTendonCompensation":
+        """Build compensation gains from tendon routing geometry.
+
+        Args:
+            routing_moment_arms: motor name -> (wrist_m4 arm, wrist_m5 arm), meters.
+            spool_radius: finger motor spool radius in meters.
+            enabled: whether to apply the compensation.
+        """
+        if spool_radius <= 0.0:
+            raise ValueError("spool_radius must be positive")
+        gains = {
+            motor_name: (float(m4_arm) / spool_radius, float(m5_arm) / spool_radius)
+            for motor_name, (m4_arm, m5_arm) in routing_moment_arms.items()
+        }
+        return cls(enabled=enabled, gains=gains)
+
+    def delta_for_motor(self, motor_name: str, wrist_m4: float, wrist_m5: float) -> float:
+        """Return physical motor-angle compensation for one finger motor."""
+        if not self.enabled:
+            return 0.0
+        gain_m4, gain_m5 = self.gains.get(motor_name, (0.0, 0.0))
+        return -(gain_m4 * float(wrist_m4) + gain_m5 * float(wrist_m5))
+
+
 class TransmissionModel(Protocol):
     """Protocol for motor → joint angle mapping."""
 
@@ -242,6 +304,7 @@ class CascadeTransmissionModel:
         finger_id="pinky", joint_prefix="finger_5",
         motor_sign=(1, 1), knuckle_sign=1,
     ))
+    wrist_compensation: WristTendonCompensation = field(default_factory=WristTendonCompensation)
 
     # Motor names in order
     motor_names: list[str] = field(default_factory=lambda: [
@@ -288,9 +351,33 @@ class CascadeTransmissionModel:
             return 0.0
         return float(np.clip(motor_val / hi, -1.0, 1.0))
 
+    def apply_wrist_compensation(self, motors: np.ndarray) -> np.ndarray:
+        """Return physical motor values with wrist tendon compensation applied."""
+        compensated = np.asarray(motors, dtype=np.float64).copy()
+        wrist_m4 = float(compensated[15])
+        wrist_m5 = float(compensated[16])
+        for idx, motor_name in enumerate(self.motor_names[:15]):
+            compensated[idx] += self.wrist_compensation.delta_for_motor(
+                motor_name,
+                wrist_m4,
+                wrist_m5,
+            )
+            lo, hi = self.motor_ranges[idx]
+            compensated[idx] = float(np.clip(compensated[idx], lo, hi))
+        return compensated
+
+    def wrist_compensation_report(self, motor_values: dict[str, float]) -> dict[str, float]:
+        """Return per-motor compensation deltas for physical motor values."""
+        wrist_m4 = float(motor_values.get("wrist_m4", 0.0))
+        wrist_m5 = float(motor_values.get("wrist_m5", 0.0))
+        return {
+            motor_name: self.wrist_compensation.delta_for_motor(motor_name, wrist_m4, wrist_m5)
+            for motor_name in self.motor_names[:15]
+        }
+
     def map(self, motor_action: np.ndarray) -> dict[str, float]:
         """Convert 17-D normalized motor action → dict of joint target positions."""
-        motors = self.denormalize(motor_action)
+        motors = self.apply_wrist_compensation(self.denormalize(motor_action))
         targets: dict[str, float] = {}
 
         # Thumb

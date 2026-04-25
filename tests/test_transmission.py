@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tendon_hand.core.models.transmission import CascadeTransmissionModel
+from tendon_hand.core.models.transmission import CascadeTransmissionModel, WristTendonCompensation
 
 
 class TestTransmissionBehavior:
@@ -228,6 +228,49 @@ class TestTransmissionBehavior:
         assert joints["finger_2_link3_joint"] == pytest.approx(1.65, abs=1e-5)
         assert joints["finger_2_link2_joint"] == pytest.approx(1.65, abs=1e-5)
         assert joints["finger_2_link1_joint"] == pytest.approx(0.85, abs=1e-5)
+
+    def test_wrist_compensation_offsets_finger_flexor_motors(self, model):
+        """Wrist motion should send routed finger motors in the opposite direction."""
+        action = np.zeros(17)
+        action[3] = 0.20   # index_m1 -> 1.2 physical motor rad before compensation
+        action[15] = 1.0   # wrist_m4 -> 0.1 physical wrist rad
+
+        motors = model.denormalize(action)
+        compensated = model.apply_wrist_compensation(motors)
+
+        assert compensated[3] == pytest.approx(1.2 - 0.03, abs=1e-6)
+        assert compensated[4] == pytest.approx(-0.02, abs=1e-6)
+        assert compensated[9] == pytest.approx(0.0, abs=1e-6)
+        assert compensated[15] == pytest.approx(0.1, abs=1e-6)
+
+    def test_wrist_compensation_reduces_unwanted_closure(self):
+        """A model with compensation should close less for the same wrist pull."""
+        no_comp = CascadeTransmissionModel(
+            wrist_compensation=WristTendonCompensation(enabled=False)
+        )
+        with_comp = CascadeTransmissionModel(
+            wrist_compensation=WristTendonCompensation(
+                gains={"index_m1": (3.0, 0.0)}
+            )
+        )
+        action = np.zeros(17)
+        action[3] = 0.20
+        action[15] = 1.0
+
+        uncompensated = no_comp.map(action)
+        compensated = with_comp.map(action)
+
+        assert compensated["finger_2_link3_joint"] < uncompensated["finger_2_link3_joint"]
+
+    def test_wrist_compensation_can_be_derived_from_routing_geometry(self):
+        """moment arm / spool radius gives motor-rad per wrist-rad compensation."""
+        compensation = WristTendonCompensation.from_geometry(
+            {"index_m1": (0.0024, 0.0)},
+            spool_radius=0.008,
+        )
+
+        assert compensation.gains["index_m1"] == pytest.approx((0.3, 0.0))
+        assert compensation.delta_for_motor("index_m1", wrist_m4=0.1, wrist_m5=0.0) == pytest.approx(-0.03)
 
 
 class TestFingerTransmissionInternals:

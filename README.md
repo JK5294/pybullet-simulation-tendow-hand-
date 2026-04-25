@@ -186,6 +186,41 @@ Final angle      : max(motor1_effect, motor2_effect) per joint
 
 See `examples/demo_precise_angle.py` for a step-by-step demonstration (no URDF required).
 
+## Wrist Tendon Compensation
+
+Because the finger motors are behind the wrist, wrist rotation can pull the
+finger tendons and unintentionally close the fingers. The transmission model
+therefore applies motor-space compensation before mapping motors to joints:
+
+```text
+finger_motor_delta = -(wrist_tendon_moment_arm / motor_spool_radius) * wrist_angle
+```
+
+The default `CascadeTransmissionModel` includes conservative compensation
+coefficients for `wrist_m4` and `wrist_m5`. For calibrated hardware, build the
+coefficients from measured routing geometry:
+
+```python
+from tendon_hand.core.models.transmission import (
+    CascadeTransmissionModel,
+    WristTendonCompensation,
+)
+
+comp = WristTendonCompensation.from_geometry(
+    {
+        "index_m1": (0.0024, 0.0),  # meters of tendon moment arm for wrist_m4/m5
+        "middle_m1": (0.0024, 0.0),
+        "ring_m1": (0.0, 0.0024),
+        "pinky_m1": (0.0, 0.0024),
+    },
+    spool_radius=0.008,
+)
+model = CascadeTransmissionModel(wrist_compensation=comp)
+```
+
+Set `WristTendonCompensation(enabled=False)` only when you intentionally want
+the old uncompensated transmission behavior.
+
 ## Project Structure
 
 ```
